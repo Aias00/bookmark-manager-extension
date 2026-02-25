@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bookmark Manager</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="container">
+    <header class="header">
+      <div>
+        <h1>Bookmark Manager</h1>
+        <p class="sub">Scan, clean, and organize bookmarks.</p>
+      </div>
+      <span id="statusBadge" class="badge">Idle</span>
+    </header>
+
+    <section class="panel">
+      <div class="actions">
+        <button id="scanBtn" class="primary">Scan Bookmarks</button>
+        <button id="deleteBtn" class="danger" disabled>Delete Invalid</button>
+        <button id="previewBtn">Preview Domains</button>
+        <button id="organizeBtn" class="secondary" disabled>Organize by Domain</button>
+      </div>
+      <div class="progress">
+        <div id="progressBar" class="progress-bar"></div>
+      </div>
+      <div class="progress-meta">
+        <span id="progressText">0 / 0</span>
+        <span id="progressPercent" class="progress-percent">0%</span>
+        <span id="timerText">Ready</span>
+        <button id="cancelBtn" class="ghost danger-text" style="display: none;">Cancel</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Settings</h2>
+      <div class="settings">
+        <label>
+          <span>Concurrency</span>
+          <input id="concurrencyInput" type="number" min="1" max="10" />
+        </label>
+        <label>
+          <span>Timeout (ms)</span>
+          <input id="timeoutInput" type="number" min="1000" max="20000" step="500" />
+        </label>
+        <button id="saveSettingsBtn">Save Settings</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Scope</h2>
+      <div class="panel-meta">
+        <span id="folderSummary">All folders selected.</span>
+        <button id="reloadFoldersBtn" class="ghost">Reload</button>
+      </div>
+      <div id="folderTree" class="folder-tree" role="tree"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Invalid Bookmarks</h2>
+      <div class="panel-meta">
+        <span id="invalidSummary">No scan yet.</span>
+        <div class="panel-actions">
+          <button id="retrySelectedBtn" class="ghost" disabled>Retry Selected</button>
+          <label class="checkbox">
+            <input id="selectAllInvalid" type="checkbox" />
+            Select all
+          </label>
+        </div>
+      </div>
+      <div class="search-filter-bar">
+        <input id="searchInput" type="text" placeholder="Search bookmarks..." class="search-input" />
+        <select id="errorFilter" class="error-filter">
+          <option value="all">All Errors</option>
+          <option value="http">HTTP Errors</option>
+          <option value="timeout">Timeouts</option>
+          <option value="network">Network Errors</option>
+          <option value="cors">CORS</option>
+          <option value="unknown">Unknown</option>
+        </select>
+      </div>
+      <ul id="invalidList" class="list"></ul>
+    </section>
+
+    <section class="panel">
+      <h2>Domain Preview</h2>
+      <div class="panel-meta">
+        <span id="domainSummary">No preview yet.</span>
+      </div>
+      <ul id="domainList" class="list"></ul>
+    </section>
+
+    <section class="panel">
+      <h2>Duplicates</h2>
+      <div class="panel-meta">
+        <span id="duplicateSummary">No scan yet.</span>
+        <button id="scanDuplicatesBtn" class="ghost">Scan Duplicates</button>
+      </div>
+      <ul id="duplicateList" class="list"></ul>
+    </section>
+
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>
