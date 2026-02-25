@@ -50,19 +50,11 @@
     </section>
 
     <section class="panel">
-      <h2>Scope</h2>
-      <div class="panel-meta">
-        <span id="folderSummary">All folders selected.</span>
-        <button id="reloadFoldersBtn" class="ghost">Reload</button>
-      </div>
-      <div id="folderTree" class="folder-tree" role="tree"></div>
-    </section>
-
-    <section class="panel">
       <h2>Invalid Bookmarks</h2>
       <div class="panel-meta">
         <span id="invalidSummary">No scan yet.</span>
         <div class="panel-actions">
+          <button id="deleteSelectedBtn" class="ghost danger-text" disabled>Delete Selected</button>
           <button id="retrySelectedBtn" class="ghost" disabled>Retry Selected</button>
           <label class="checkbox">
             <input id="selectAllInvalid" type="checkbox" />

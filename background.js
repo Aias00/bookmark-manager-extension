@@ -159,19 +159,34 @@ const runWithConcurrency = async (items, limit, worker, onProgress) => {
   });
 };
 
-const buildDomainMap = (bookmarks) => {
-  const map = new Map();
+const extractDomain = (url) => new URL(url).hostname.replace(/^www\./i, "");
+
+const buildDomainGroups = (bookmarks) => {
+  const groups = new Map();
+
   bookmarks.forEach((bookmark) => {
     if (!bookmark.url || !isHttpUrl(bookmark.url)) return;
     try {
-      const domain = new URL(bookmark.url).hostname.replace(/^www\./i, "");
-      map.set(domain, (map.get(domain) || 0) + 1);
+      const domain = extractDomain(bookmark.url);
+      if (!groups.has(domain)) {
+        groups.set(domain, []);
+      }
+      groups.get(domain).push({
+        id: bookmark.id,
+        title: bookmark.title || "(Untitled)",
+        url: bookmark.url
+      });
     } catch (error) {
       return;
     }
   });
-  return Array.from(map.entries())
-    .map(([domain, count]) => ({ domain, count }))
+
+  return Array.from(groups.entries())
+    .map(([domain, bookmarksInDomain]) => ({
+      domain,
+      count: bookmarksInDomain.length,
+      bookmarks: bookmarksInDomain.sort((a, b) => a.title.localeCompare(b.title))
+    }))
     .sort((a, b) => b.count - a.count || a.domain.localeCompare(b.domain));
 };
 
@@ -226,26 +241,6 @@ const collectFolderIds = (node, set) => {
   if (node.children) node.children.forEach((child) => collectFolderIds(child, set));
 };
 
-const getBookmarksForFolderIds = async (folderIds = []) => {
-  if (!Array.isArray(folderIds) || folderIds.length === 0) {
-    const tree = await getBookmarksTree();
-    return flattenBookmarks(tree);
-  }
-
-  const results = [];
-  const seen = new Set();
-  for (const id of folderIds) {
-    const subTree = await getSubTree(id);
-    const bookmarks = flattenBookmarks(subTree);
-    bookmarks.forEach((bookmark) => {
-      if (seen.has(bookmark.id)) return;
-      seen.add(bookmark.id);
-      results.push(bookmark);
-    });
-  }
-  return results;
-};
-
 const scanBookmarks = async (port, settings) => {
   const tree = await getBookmarksTree();
   const allBookmarks = flattenBookmarks(tree);
@@ -290,15 +285,17 @@ const scanBookmarks = async (port, settings) => {
   return results;
 };
 
-const previewDomains = async (port, folderIds = []) => {
-  const allBookmarks = await getBookmarksForFolderIds(folderIds);
-  const domains = buildDomainMap(allBookmarks);
+const previewDomains = async (port) => {
+  const tree = await getBookmarksTree();
+  const allBookmarks = flattenBookmarks(tree);
+  const domains = buildDomainGroups(allBookmarks);
   port.postMessage({ type: "previewResult", domains });
   chrome.runtime.sendMessage({ type: "idle" });
 };
 
-const organizeByDomain = async (port, folderIds = []) => {
-  const allBookmarks = await getBookmarksForFolderIds(folderIds);
+const organizeByDomain = async (port) => {
+  const tree = await getBookmarksTree();
+  const allBookmarks = flattenBookmarks(tree);
   const rootFolder = await findRootFolder();
   if (!rootFolder) {
     port.postMessage({ type: "error", message: "Root folder not found" });
@@ -320,7 +317,7 @@ const organizeByDomain = async (port, folderIds = []) => {
   let moved = 0;
   for (const bookmark of bookmarksToMove) {
     try {
-      const domain = new URL(bookmark.url).hostname.replace(/^www\./i, "");
+      const domain = extractDomain(bookmark.url);
       const domainFolder = await ensureFolder(byDomainFolder.id, domain);
       await moveBookmark(bookmark.id, domainFolder.id);
       moved += 1;
@@ -334,6 +331,30 @@ const organizeByDomain = async (port, folderIds = []) => {
   chrome.runtime.sendMessage({ type: "idle" });
 };
 
+const updateLastScanAfterDelete = async (deletedIds = []) => {
+  if (!Array.isArray(deletedIds) || deletedIds.length === 0) {
+    return;
+  }
+  const stored = await chrome.storage.local.get("lastScan");
+  if (!stored.lastScan) return;
+
+  const deletedSet = new Set(deletedIds);
+  const lastScan = stored.lastScan;
+  const invalid = Array.isArray(lastScan.invalid)
+    ? lastScan.invalid.filter((item) => !deletedSet.has(item.id))
+    : [];
+  const total = lastScan.total || invalid.length;
+  const summary = `${invalid.length} invalid out of ${total} scanned.`;
+
+  await chrome.storage.local.set({
+    lastScan: {
+      ...lastScan,
+      invalid,
+      summary
+    }
+  });
+};
+
 const deleteBookmarks = async (port, ids = []) => {
   let deleted = 0;
   for (const id of ids) {
@@ -341,6 +362,7 @@ const deleteBookmarks = async (port, ids = []) => {
     deleted += 1;
     port.postMessage({ type: "progress", completed: deleted, total: ids.length });
   }
+  await updateLastScanAfterDelete(ids);
   port.postMessage({ type: "deleteResult", deleted, deletedIds: ids });
   chrome.runtime.sendMessage({ type: "idle" });
 };
@@ -422,10 +444,10 @@ chrome.runtime.onConnect.addListener((port) => {
         await scanBookmarks(port, { ...settings, ...(message.settings || {}) });
         break;
       case "PREVIEW_DOMAINS":
-        await previewDomains(port, message.folderIds || []);
+        await previewDomains(port);
         break;
       case "ORGANIZE_BY_DOMAIN":
-        await organizeByDomain(port, message.folderIds || []);
+        await organizeByDomain(port);
         break;
       case "DELETE_BOOKMARKS":
         await deleteBookmarks(port, message.ids || []);

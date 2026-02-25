@@ -1,0 +1,6 @@
+# Chrome Web Store release artifacts
+release/
+
+# Python bytecode/cache
+__pycache__/
+*.py[cod]

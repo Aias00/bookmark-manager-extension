@@ -6,21 +6,20 @@ const DEFAULT_SETTINGS = {
 const state = {
   invalidBookmarks: [],
   filteredBookmarks: [],
+  selectedInvalidIds: new Set(),
   domainPreview: [],
+  expandedDomains: new Set(),
   duplicates: [],
   progressTotal: 0,
   progressDone: 0,
   startTime: null,
-  folderTree: [],
-  selectedFolderIds: new Set(),
-  expandedFolderIds: new Set(),
   pendingRetryIds: new Set(),
   retryTotal: 0,
+  retryRecovered: 0,
+  retryStillInvalid: 0,
   isScanning: false,
   searchQuery: "",
-  errorFilter: "all",
-  loadedChildrenIds: new Set(),
-  loadingFolderId: null
+  errorFilter: "all"
 };
 
 const elements = {
@@ -37,15 +36,13 @@ const elements = {
   invalidList: document.getElementById("invalidList"),
   invalidSummary: document.getElementById("invalidSummary"),
   selectAllInvalid: document.getElementById("selectAllInvalid"),
+  deleteSelectedBtn: document.getElementById("deleteSelectedBtn"),
   retrySelectedBtn: document.getElementById("retrySelectedBtn"),
   domainList: document.getElementById("domainList"),
   domainSummary: document.getElementById("domainSummary"),
   concurrencyInput: document.getElementById("concurrencyInput"),
   timeoutInput: document.getElementById("timeoutInput"),
   saveSettingsBtn: document.getElementById("saveSettingsBtn"),
-  folderTree: document.getElementById("folderTree"),
-  folderSummary: document.getElementById("folderSummary"),
-  reloadFoldersBtn: document.getElementById("reloadFoldersBtn"),
   searchInput: document.getElementById("searchInput"),
   errorFilter: document.getElementById("errorFilter"),
   duplicateSummary: document.getElementById("duplicateSummary"),
@@ -88,6 +85,52 @@ const setTimer = () => {
   elements.timerText.textContent = `Elapsed ${seconds}s`;
 };
 
+const createUrlLink = (url, className = "link-url", text = url) => {
+  if (!url) {
+    const fallback = document.createElement("span");
+    fallback.className = className;
+    fallback.textContent = text || "";
+    return fallback;
+  }
+  const link = document.createElement("a");
+  link.className = className;
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = text || url;
+  link.title = url;
+  link.dataset.url = url;
+  return link;
+};
+
+const normalizeBookmarkId = (id) => String(id);
+
+const resetSelectedInvalidIds = (bookmarks = []) => {
+  state.selectedInvalidIds = new Set(bookmarks.map((bookmark) => normalizeBookmarkId(bookmark.id)));
+};
+
+const syncSelectedInvalidIds = () => {
+  const validIds = new Set(state.invalidBookmarks.map((bookmark) => normalizeBookmarkId(bookmark.id)));
+  state.selectedInvalidIds = new Set(
+    Array.from(state.selectedInvalidIds).filter((id) => validIds.has(id))
+  );
+};
+
+const updateSelectAllInvalidState = () => {
+  const checkboxes = Array.from(
+    elements.invalidList.querySelectorAll("input[type='checkbox']")
+  );
+  if (checkboxes.length === 0) {
+    elements.selectAllInvalid.checked = false;
+    elements.selectAllInvalid.indeterminate = false;
+    return;
+  }
+  const selectedCount = checkboxes.filter((checkbox) => checkbox.checked).length;
+  elements.selectAllInvalid.checked = selectedCount === checkboxes.length;
+  elements.selectAllInvalid.indeterminate =
+    selectedCount > 0 && selectedCount < checkboxes.length;
+};
+
 const handlePortMessage = (message) => {
   if (message.type === "progress") {
     setProgress(message.completed, message.total);
@@ -98,6 +141,7 @@ const handlePortMessage = (message) => {
   if (message.type === "scanResult") {
     state.isScanning = false;
     state.invalidBookmarks = message.invalid || [];
+    resetSelectedInvalidIds(state.invalidBookmarks);
     renderInvalidList();
     setStatus(`Scan complete (${message.invalid.length} invalid)`);
     setProgress(message.total || 0, message.total || 0);
@@ -109,6 +153,7 @@ const handlePortMessage = (message) => {
 
   if (message.type === "previewResult") {
     state.domainPreview = message.domains || [];
+    state.expandedDomains = state.domainPreview.length > 0 ? new Set([state.domainPreview[0].domain]) : new Set();
     renderDomainPreview();
     setStatus(`Preview ready (${state.domainPreview.length} domains)`);
     elements.organizeBtn.disabled = state.domainPreview.length === 0;
@@ -162,10 +207,13 @@ const filterBookmarks = () => {
 
 const renderInvalidList = () => {
   filterBookmarks();
+  syncSelectedInvalidIds();
   elements.invalidList.innerHTML = "";
   if (state.invalidBookmarks.length === 0) {
     elements.invalidSummary.textContent = "No invalid bookmarks.";
-    elements.selectAllInvalid.checked = false;
+    state.selectedInvalidIds.clear();
+    updateSelectAllInvalidState();
+    elements.deleteSelectedBtn.disabled = true;
     elements.retrySelectedBtn.disabled = true;
     return;
   }
@@ -176,26 +224,28 @@ const renderInvalidList = () => {
     filtered === total
       ? `${total} invalid bookmarks found.`
       : `${filtered} of ${total} bookmarks shown.`;
-  elements.selectAllInvalid.checked = true;
-  elements.retrySelectedBtn.disabled = filtered === 0;
 
   state.filteredBookmarks.forEach((bookmark) => {
     const li = document.createElement("li");
-    const label = document.createElement("label");
-    label.className = "checkbox";
+    li.className = "invalid-item";
+    li.dataset.url = bookmark.url || "";
+    li.tabIndex = 0;
+    li.title = "Open bookmark in new tab";
+
+    const row = document.createElement("div");
+    row.className = "checkbox";
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
-    checkbox.checked = true;
-    checkbox.dataset.id = bookmark.id;
+    const bookmarkId = normalizeBookmarkId(bookmark.id);
+    checkbox.checked = state.selectedInvalidIds.has(bookmarkId);
+    checkbox.dataset.id = bookmarkId;
 
     const title = document.createElement("span");
     title.className = "title";
     title.textContent = bookmark.title || "(Untitled)";
 
-    const url = document.createElement("span");
-    url.className = "url";
-    url.textContent = bookmark.url;
+    const url = createUrlLink(bookmark.url, "url link-url");
 
     const errorMeta = document.createElement("div");
     errorMeta.className = "error-meta";
@@ -210,17 +260,31 @@ const renderInvalidList = () => {
     retryBtn.textContent = "Retry";
     retryBtn.dataset.id = bookmark.id;
 
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "delete-single-btn";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.dataset.id = bookmark.id;
+    deleteBtn.dataset.title = bookmark.title || "(Untitled)";
+
+    const actions = document.createElement("div");
+    actions.className = "error-actions";
+    actions.appendChild(retryBtn);
+    actions.appendChild(deleteBtn);
+
     errorMeta.appendChild(errorBadge);
-    errorMeta.appendChild(retryBtn);
+    errorMeta.appendChild(actions);
 
-    label.appendChild(checkbox);
-    label.appendChild(title);
+    row.appendChild(checkbox);
+    row.appendChild(title);
 
-    li.appendChild(label);
+    li.appendChild(row);
     li.appendChild(url);
     li.appendChild(errorMeta);
     elements.invalidList.appendChild(li);
   });
+
+  updateRetrySelectedState();
+  updateSelectAllInvalidState();
 };
 
 const renderDomainPreview = () => {
@@ -229,20 +293,58 @@ const renderDomainPreview = () => {
     elements.domainSummary.textContent = "No preview yet.";
     return;
   }
-  elements.domainSummary.textContent = `${state.domainPreview.length} domains detected.`;
+  const totalBookmarks = state.domainPreview.reduce((sum, item) => sum + item.count, 0);
+  elements.domainSummary.textContent = `${state.domainPreview.length} domains (${totalBookmarks} bookmarks).`;
 
   state.domainPreview.forEach((item) => {
+    const expanded = state.expandedDomains.has(item.domain);
     const li = document.createElement("li");
+    li.className = "domain-item";
+
+    const header = document.createElement("button");
+    header.type = "button";
+    header.className = "domain-header";
+    header.dataset.domain = item.domain;
+
+    const arrow = document.createElement("span");
+    arrow.className = "domain-arrow";
+    arrow.textContent = expanded ? "▾" : "▸";
+
     const title = document.createElement("span");
     title.className = "title";
-    title.textContent = `${item.domain}`;
+    title.textContent = item.domain;
 
     const count = document.createElement("span");
-    count.className = "url";
+    count.className = "domain-count";
     count.textContent = `${item.count} bookmarks`;
 
-    li.appendChild(title);
-    li.appendChild(count);
+    header.appendChild(arrow);
+    header.appendChild(title);
+    header.appendChild(count);
+    li.appendChild(header);
+
+    if (expanded) {
+      const bookmarks = document.createElement("ul");
+      bookmarks.className = "domain-bookmark-list";
+
+      item.bookmarks.forEach((bookmark) => {
+        const bookmarkItem = document.createElement("li");
+        bookmarkItem.className = "domain-bookmark-item";
+
+        const bookmarkTitle = document.createElement("span");
+        bookmarkTitle.className = "title";
+        bookmarkTitle.textContent = bookmark.title || "(Untitled)";
+
+        const bookmarkUrl = createUrlLink(bookmark.url, "url link-url domain-bookmark-link");
+
+        bookmarkItem.appendChild(bookmarkTitle);
+        bookmarkItem.appendChild(bookmarkUrl);
+        bookmarks.appendChild(bookmarkItem);
+      });
+
+      li.appendChild(bookmarks);
+    }
+
     elements.domainList.appendChild(li);
   });
 };
@@ -276,84 +378,6 @@ const formatErrorDetails = (bookmark) => {
   if (bookmark.errorMessage) parts.push(`Message: ${bookmark.errorMessage}`);
   if (bookmark.attempts) parts.push(`Retries: ${Math.max(0, bookmark.attempts - 1)}`);
   return parts.join("\n");
-};
-
-const buildFolderNodes = (nodes = [], lazy = true) =>
-  nodes
-    .filter((node) => !node.url)
-    .map((node) => ({
-      id: node.id,
-      title: node.title || "(Untitled Folder)",
-      hasChildren: node.children && node.children.length > 0,
-      children: lazy ? [] : buildFolderNodes(node.children || [], lazy)
-    }));
-
-const updateFolderSummary = () => {
-  const count = state.selectedFolderIds.size;
-  if (count === 0) {
-    elements.folderSummary.textContent = "All folders selected.";
-    return;
-  }
-  elements.folderSummary.textContent = `${count} folder${count === 1 ? "" : "s"} selected.`;
-};
-
-const renderFolderTree = () => {
-  elements.folderTree.innerHTML = "";
-  const container = document.createElement("div");
-  container.className = "folder-list";
-  renderFolderNodes(state.folderTree, container, 0);
-  elements.folderTree.appendChild(container);
-  updateFolderSummary();
-};
-
-const renderFolderNodes = (nodes, container, depth) => {
-  nodes.forEach((node) => {
-    const row = document.createElement("div");
-    row.className = "folder-row";
-    row.style.paddingLeft = `${depth * 12}px`;
-
-    const hasChildren = node.hasChildren || (node.children && node.children.length > 0);
-    const isExpanded = state.expandedFolderIds.has(node.id) || depth === 0;
-    const isLoading = state.loadingFolderId === node.id;
-
-    if (depth === 0 && hasChildren) {
-      state.expandedFolderIds.add(node.id);
-    }
-
-    const toggle = document.createElement("button");
-    toggle.className = "folder-toggle";
-    toggle.dataset.id = node.id;
-    toggle.disabled = !hasChildren || isLoading;
-    if (isLoading) {
-      toggle.textContent = "⋯";
-    } else if (hasChildren) {
-      toggle.textContent = isExpanded ? "▾" : "▸";
-    } else {
-      toggle.textContent = "•";
-    }
-
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.className = "folder-checkbox";
-    checkbox.dataset.id = node.id;
-    checkbox.checked = state.selectedFolderIds.has(node.id);
-
-    const title = document.createElement("span");
-    title.className = "folder-title";
-    title.textContent = node.title;
-
-    row.appendChild(toggle);
-    row.appendChild(checkbox);
-    row.appendChild(title);
-    container.appendChild(row);
-
-    if (hasChildren && isExpanded && node.children && node.children.length > 0) {
-      const childrenContainer = document.createElement("div");
-      childrenContainer.className = "folder-children";
-      renderFolderNodes(node.children, childrenContainer, depth + 1);
-      container.appendChild(childrenContainer);
-    }
-  });
 };
 
 // ===== 书签去重功能 =====
@@ -453,10 +477,7 @@ const renderDuplicateList = () => {
     const header = document.createElement("div");
     header.className = "duplicate-header";
 
-    const url = document.createElement("span");
-    url.className = "duplicate-url";
-    url.textContent = duplicate.url;
-    url.title = duplicate.url;
+    const url = createUrlLink(duplicate.url, "duplicate-url link-url");
 
     const count = document.createElement("span");
     count.className = "duplicate-count";
@@ -560,46 +581,6 @@ const handleDeleteDuplicates = async (url) => {
 
 // ===== 结束书签去重功能 =====
 
-const loadFolderTree = async () => {
-  const tree = await chrome.bookmarks.getTree();
-  const root = tree[0];
-  state.folderTree = buildFolderNodes(root ? root.children || [] : []);
-  renderFolderTree();
-};
-
-const loadFolderChildren = async (folderId) => {
-  if (state.loadedChildrenIds.has(folderId)) {
-    return;
-  }
-
-  state.loadingFolderId = folderId;
-  renderFolderTree();
-
-  const subTree = await new Promise((resolve) => {
-    chrome.bookmarks.getSubTree(folderId, (nodes) => resolve(nodes || []));
-  });
-
-  const folder = findFolderById(state.folderTree, folderId);
-  if (folder && subTree[0]) {
-    folder.children = buildFolderNodes(subTree[0].children || [], false);
-    state.loadedChildrenIds.add(folderId);
-  }
-
-  state.loadingFolderId = null;
-  renderFolderTree();
-};
-
-const findFolderById = (nodes, id) => {
-  for (const node of nodes) {
-    if (node.id === id) return node;
-    if (node.children) {
-      const found = findFolderById(node.children, id);
-      if (found) return found;
-    }
-  }
-  return null;
-};
-
 const getSettings = async () => {
   const stored = await chrome.storage.sync.get("settings");
   return { ...DEFAULT_SETTINGS, ...(stored.settings || {}) };
@@ -626,6 +607,7 @@ const loadLastScan = async () => {
   const stored = await chrome.storage.local.get("lastScan");
   if (stored.lastScan) {
     state.invalidBookmarks = stored.lastScan.invalid || [];
+    resetSelectedInvalidIds(state.invalidBookmarks);
     renderInvalidList();
     elements.deleteBtn.disabled = state.invalidBookmarks.length === 0;
     elements.invalidSummary.textContent = stored.lastScan.summary || "Previous scan loaded.";
@@ -639,14 +621,13 @@ const getSelectedInvalidIds = () => {
     .map((checkbox) => checkbox.dataset.id);
 };
 
-const getSelectedFolderIds = () => Array.from(state.selectedFolderIds);
-
 const disableActions = (disabled) => {
   elements.scanBtn.disabled = disabled;
   elements.previewBtn.disabled = disabled;
   elements.organizeBtn.disabled = disabled || state.domainPreview.length === 0;
   elements.deleteBtn.disabled = disabled || state.invalidBookmarks.length === 0;
   const selectedIds = getSelectedInvalidIds();
+  elements.deleteSelectedBtn.disabled = disabled || selectedIds.length === 0;
   elements.retrySelectedBtn.disabled = disabled || selectedIds.length === 0;
   elements.cancelBtn.style.display = state.isScanning ? "block" : "none";
 };
@@ -684,7 +665,7 @@ const handlePreview = () => {
   setStatus("Building preview...");
   setProgress(0, 0);
   startTimer();
-  getPort().postMessage({ action: "PREVIEW_DOMAINS", folderIds: getSelectedFolderIds() });
+  getPort().postMessage({ action: "PREVIEW_DOMAINS" });
 };
 
 const handleOrganize = () => {
@@ -695,7 +676,7 @@ const handleOrganize = () => {
   setStatus("Organizing...");
   setProgress(0, 0);
   startTimer();
-  getPort().postMessage({ action: "ORGANIZE_BY_DOMAIN", folderIds: getSelectedFolderIds() });
+  getPort().postMessage({ action: "ORGANIZE_BY_DOMAIN" });
 };
 
 const handleDelete = () => {
@@ -714,12 +695,33 @@ const handleDelete = () => {
   getPort().postMessage({ action: "DELETE_BOOKMARKS", ids: selectedIds });
 };
 
+const handleDeleteSingle = (id, title) => {
+  if (!id) return;
+  const name = title || "(Untitled)";
+  if (!confirm(`Delete "${name}"? This cannot be undone.`)) {
+    return;
+  }
+  disableActions(true);
+  setStatus("Deleting bookmark...");
+  setProgress(0, 1);
+  startTimer();
+  getPort().postMessage({ action: "DELETE_BOOKMARKS", ids: [id] });
+};
+
 const handleSelectAll = (event) => {
   const checked = event.target.checked;
+  elements.selectAllInvalid.indeterminate = false;
   elements.invalidList.querySelectorAll("input[type='checkbox']").forEach((checkbox) => {
     checkbox.checked = checked;
+    if (!checkbox.dataset.id) return;
+    if (checked) {
+      state.selectedInvalidIds.add(checkbox.dataset.id);
+    } else {
+      state.selectedInvalidIds.delete(checkbox.dataset.id);
+    }
   });
   updateRetrySelectedState();
+  updateSelectAllInvalidState();
 };
 
 const handleRetrySelected = () => {
@@ -734,6 +736,8 @@ const handleRetrySelected = () => {
   startTimer();
   state.pendingRetryIds = new Set(selectedIds);
   state.retryTotal = selectedIds.length;
+  state.retryRecovered = 0;
+  state.retryStillInvalid = 0;
   selectedIds.forEach((id) => {
     getPort().postMessage({ action: "RETRY_BOOKMARK", id });
   });
@@ -747,25 +751,130 @@ const handleRetrySingle = (id) => {
   startTimer();
   state.pendingRetryIds = new Set([id]);
   state.retryTotal = 1;
+  state.retryRecovered = 0;
+  state.retryStillInvalid = 0;
   getPort().postMessage({ action: "RETRY_BOOKMARK", id });
 };
 
 const updateRetrySelectedState = () => {
   const selectedIds = getSelectedInvalidIds();
+  elements.deleteSelectedBtn.disabled = selectedIds.length === 0;
   elements.retrySelectedBtn.disabled = selectedIds.length === 0;
+};
+
+const openBookmarkInNewTab = (url) => {
+  if (!url) return;
+  if (chrome.tabs && chrome.tabs.create) {
+    chrome.tabs.create({ url }, () => {
+      if (chrome.runtime.lastError) {
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
+    });
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+};
+
+const handleDomainListClick = (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+
+  const link = target.closest(".link-url");
+  if (link && link.dataset.url) {
+    event.preventDefault();
+    openBookmarkInNewTab(link.dataset.url);
+    return;
+  }
+
+  const header = target.closest(".domain-header");
+  if (header && header.dataset.domain) {
+    const domain = header.dataset.domain;
+    if (state.expandedDomains.has(domain)) {
+      state.expandedDomains.delete(domain);
+    } else {
+      state.expandedDomains.add(domain);
+    }
+    renderDomainPreview();
+  }
 };
 
 const handleInvalidListClick = (event) => {
   const target = event.target;
+  if (!(target instanceof Element)) return;
+
+  const link = target.closest(".link-url");
+  if (link && link.dataset.url) {
+    event.preventDefault();
+    openBookmarkInNewTab(link.dataset.url);
+    return;
+  }
+
   if (target && target.classList.contains("retry-btn")) {
     handleRetrySingle(target.dataset.id);
+    return;
+  }
+  if (target && target.classList.contains("delete-single-btn")) {
+    handleDeleteSingle(target.dataset.id, target.dataset.title);
+    return;
+  }
+  if (target.closest("input[type='checkbox']")) {
+    return;
+  }
+  if (target.closest(".error-actions")) {
+    return;
+  }
+  const item = target.closest(".invalid-item");
+  if (item && item.dataset.url) {
+    openBookmarkInNewTab(item.dataset.url);
+  }
+};
+
+const handleInvalidListKeydown = (event) => {
+  if (event.key !== "Enter" && event.key !== " ") {
+    return;
+  }
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  if (target.matches("button, input, select, textarea, a")) {
+    return;
+  }
+  const item = target.closest(".invalid-item");
+  if (item && item.dataset.url) {
+    event.preventDefault();
+    openBookmarkInNewTab(item.dataset.url);
   }
 };
 
 const handleInvalidListChange = (event) => {
   const target = event.target;
   if (target && target.matches("input[type='checkbox']")) {
+    const id = target.dataset.id;
+    if (id) {
+      if (target.checked) {
+        state.selectedInvalidIds.add(id);
+      } else {
+        state.selectedInvalidIds.delete(id);
+      }
+    }
     updateRetrySelectedState();
+    updateSelectAllInvalidState();
+  }
+};
+
+const handleDuplicateListClick = (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+
+  const link = target.closest(".link-url");
+  if (link && link.dataset.url) {
+    event.preventDefault();
+    openBookmarkInNewTab(link.dataset.url);
+    return;
+  }
+
+  if (target.classList.contains("ghost") && target.textContent === "Keep Selected") {
+    const url = target.dataset.url;
+    handleDeleteDuplicates(url);
   }
 };
 
@@ -783,13 +892,18 @@ const updateInvalidBookmark = (payload) => {
 
 const handleRetryResult = (message) => {
   updateInvalidBookmark(message);
+  if (message.ok) {
+    state.retryRecovered += 1;
+  } else {
+    state.retryStillInvalid += 1;
+  }
   if (state.pendingRetryIds.has(message.id)) {
     state.pendingRetryIds.delete(message.id);
     const completed = state.retryTotal - state.pendingRetryIds.size;
     setProgress(completed, state.retryTotal);
   }
   if (state.pendingRetryIds.size === 0) {
-    setStatus("Retry finished.");
+    setStatus(`Retry finished: ${state.retryRecovered} recovered, ${state.retryStillInvalid} still invalid.`);
     enableActionsAfterIdle();
   }
 };
@@ -810,7 +924,6 @@ chrome.runtime.onMessage.addListener((message) => {
 const init = async () => {
   await loadSettings();
   await loadLastScan();
-  await loadFolderTree();
   elements.scanBtn.addEventListener("click", handleScan);
   elements.cancelBtn.addEventListener("click", handleCancel);
   elements.previewBtn.addEventListener("click", handlePreview);
@@ -818,9 +931,12 @@ const init = async () => {
   elements.deleteBtn.addEventListener("click", handleDelete);
   elements.saveSettingsBtn.addEventListener("click", saveSettings);
   elements.selectAllInvalid.addEventListener("change", handleSelectAll);
+  elements.deleteSelectedBtn.addEventListener("click", handleDelete);
   elements.retrySelectedBtn.addEventListener("click", handleRetrySelected);
   elements.invalidList.addEventListener("click", handleInvalidListClick);
+  elements.invalidList.addEventListener("keydown", handleInvalidListKeydown);
   elements.invalidList.addEventListener("change", handleInvalidListChange);
+  elements.domainList.addEventListener("click", handleDomainListClick);
   elements.searchInput.addEventListener("input", (event) => {
     state.searchQuery = event.target.value;
     renderInvalidList();
@@ -829,42 +945,8 @@ const init = async () => {
     state.errorFilter = event.target.value;
     renderInvalidList();
   });
-  elements.folderTree.addEventListener("click", (event) => {
-    const target = event.target;
-    if (target.classList.contains("folder-toggle")) {
-      const id = target.dataset.id;
-      if (state.expandedFolderIds.has(id)) {
-        state.expandedFolderIds.delete(id);
-        renderFolderTree();
-      } else {
-        state.expandedFolderIds.add(id);
-        if (!state.loadedChildrenIds.has(id)) {
-          loadFolderChildren(id);
-        } else {
-          renderFolderTree();
-        }
-      }
-      return;
-    }
-    if (target.classList.contains("folder-checkbox")) {
-      const id = target.dataset.id;
-      if (target.checked) {
-        state.selectedFolderIds.add(id);
-      } else {
-        state.selectedFolderIds.delete(id);
-      }
-      updateFolderSummary();
-    }
-  });
-  elements.reloadFoldersBtn.addEventListener("click", loadFolderTree);
   elements.scanDuplicatesBtn.addEventListener("click", handleScanDuplicates);
-  elements.duplicateList.addEventListener("click", (event) => {
-    const target = event.target;
-    if (target.classList.contains("ghost") && target.textContent === "Keep Selected") {
-      const url = target.dataset.url;
-      handleDeleteDuplicates(url);
-    }
-  });
+  elements.duplicateList.addEventListener("click", handleDuplicateListClick);
 };
 
 init();
